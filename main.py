@@ -1,24 +1,31 @@
+# Contents of main.py (the Discord bot script)
+import discord
 import torch
 import clip
 from PIL import Image
-import glob
 import os
+import glob
 import numpy as np
 
-# Device setup
+# ---- Discord Bot Configuration ---- #
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Get token from Railway environment variable
+CHANNEL_ID = 1273094409432469605        # Replace with your target channel ID
+
+# ---- CLIP Model Setup ---- #
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
 
-# Function for embedding images
-def get_image_embedding(image):
-    processed_image = preprocess(image).unsqueeze(0).to(device)
-    with torch.no_grad():
-        image_embedding = model.encode_image(processed_image)
-    return image_embedding
+# Folder paths
+REFERENCE_FOLDER = "Images"          # Reference OSRS item images
+TEMP_FOLDER = "temp_images"          # Folder to temporarily save uploaded images
 
-# Function to load and preprocess all reference item images
-def load_reference_images(image_folder):
-    image_paths = glob.glob(os.path.join(image_folder, "*.png"))
+# Ensure temp folder exists
+if not os.path.exists(TEMP_FOLDER):
+    os.makedirs(TEMP_FOLDER)
+
+# ---- Load Reference Item Images ---- #
+def load_reference_images():
+    image_paths = glob.glob(os.path.join(REFERENCE_FOLDER, "*.png"))
     item_names = [os.path.basename(path).replace(".png", "").replace("_", " ") for path in image_paths]
     item_embeddings = []
 
@@ -26,48 +33,82 @@ def load_reference_images(image_folder):
     for path in image_paths:
         try:
             image = Image.open(path).convert("RGB")
-            embedding = get_image_embedding(image)
+            processed_image = preprocess(image).unsqueeze(0).to(device)
+            with torch.no_grad():
+                embedding = model.encode_image(processed_image)
             item_embeddings.append(embedding)
         except Exception as e:
             print(f"Error loading {path}: {e}")
-    print("Reference images loaded successfully.\n")
+    print("Reference images loaded successfully.")
     return item_names, item_embeddings
 
-# Function to compare inventory image to reference images
-def compare_inventory_to_references(inventory_image_path, item_names, item_embeddings):
-    print(f"Looking for file: {inventory_image_path}")  # Debug print to confirm path
-    if not os.path.exists(inventory_image_path):
-        print(f"Error: File not found at {inventory_image_path}")
-        return
-
-    print("Processing inventory image...")
+# ---- Compare Uploaded Image ---- #
+def compare_image_to_references(image_path, item_names, item_embeddings):
     try:
-        inventory_image = Image.open(inventory_image_path).resize((224, 224)).convert("RGB")
+        uploaded_image = Image.open(image_path).resize((224, 224)).convert("RGB")
+        processed_image = preprocess(uploaded_image).unsqueeze(0).to(device)
+        with torch.no_grad():
+            uploaded_embedding = model.encode_image(processed_image)
     except Exception as e:
-        print(f"Error loading inventory image: {e}")
-        return
-
-    inventory_embedding = get_image_embedding(inventory_image)
+        print(f"Error processing uploaded image: {e}")
+        return None
 
     similarities = []
-    for idx, item_embedding in enumerate(item_embeddings):
-        similarity = torch.cosine_similarity(inventory_embedding, item_embedding).item()
+    for idx, ref_embedding in enumerate(item_embeddings):
+        similarity = torch.cosine_similarity(uploaded_embedding, ref_embedding).item()
         similarities.append((item_names[idx], similarity))
 
     similarities.sort(key=lambda x: x[1], reverse=True)
-    print("Top Matches:")
-    for item, score in similarities[:5]:  # Top 5 matches
-        print(f"- {item}: {score:.4f}")
+    return similarities[:5]  # Return top 5 matches
 
-# Main execution
-if __name__ == "__main__":
-    # Define paths
-    images_folder = "Images"
-    inventory_image_path = "Test_Inventory/inventory_screenshot.png"  # Updated path
+# ---- Discord Bot ---- #
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True
+intents.guilds = True
+intents.message_attachments = True
 
-    # Load reference item images
-    item_names, item_embeddings = load_reference_images(images_folder)
+client = discord.Client(intents=intents)
 
-    # Compare inventory image to reference items
-    compare_inventory_to_references(inventory_image_path, item_names, item_embeddings)
+@client.event
+async def on_ready():
+    print(f"Bot is ready! Logged in as {client.user}")
 
+@client.event
+async def on_message(message):
+    # Ignore messages outside the target channel or from bots
+    if message.channel.id != CHANNEL_ID or message.author.bot:
+        return
+
+    # Check if the command "!check" is used
+    if message.content.startswith("!check"):
+        if message.attachments:
+            await message.channel.send("Processing images... Please wait.")
+            item_names, item_embeddings = load_reference_images()
+
+            for attachment in message.attachments:
+                if attachment.filename.endswith((".png", ".jpg", ".jpeg")):
+                    temp_image_path = os.path.join(TEMP_FOLDER, attachment.filename)
+                    await attachment.save(temp_image_path)  # Save the image temporarily
+
+                    # Compare the uploaded image
+                    top_matches = compare_image_to_references(temp_image_path, item_names, item_embeddings)
+
+                    # Send results back to Discord
+                    if top_matches:
+                        response = "**Top Matches:**\n"
+                        for item, score in top_matches:
+                            response += f"- {item}: {score:.4f}\n"
+                        await message.channel.send(response)
+                    else:
+                        await message.channel.send("Failed to process the image.")
+
+                    os.remove(temp_image_path)  # Clean up temp image
+        else:
+            await message.channel.send("No images found in this message. Please attach an image.")
+
+# Run the bot
+if TOKEN:
+    client.run(TOKEN)
+else:
+    print("Error: DISCORD_BOT_TOKEN not found. Set the environment variable.")
