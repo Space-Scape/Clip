@@ -1,4 +1,3 @@
-# Contents of main.py (the Discord bot script)
 import discord
 import torch
 import clip
@@ -70,6 +69,9 @@ intents.message_attachments = True
 
 client = discord.Client(intents=intents)
 
+# Preload the reference images
+item_names, item_embeddings = load_reference_images()
+
 @client.event
 async def on_ready():
     print(f"Bot is ready! Logged in as {client.user}")
@@ -80,32 +82,28 @@ async def on_message(message):
     if message.channel.id != CHANNEL_ID or message.author.bot:
         return
 
-    # Check if the command "!check" is used
-    if message.content.startswith("!check"):
-        if message.attachments:
-            await message.channel.send("Processing images... Please wait.")
-            item_names, item_embeddings = load_reference_images()
+    # Automatically process any image attachments
+    if message.attachments:
+        await message.channel.send("Processing image... Please wait.")
 
-            for attachment in message.attachments:
-                if attachment.filename.endswith((".png", ".jpg", ".jpeg")):
-                    temp_image_path = os.path.join(TEMP_FOLDER, attachment.filename)
-                    await attachment.save(temp_image_path)  # Save the image temporarily
+        for attachment in message.attachments:
+            if attachment.filename.endswith((".png", ".jpg", ".jpeg")):
+                temp_image_path = os.path.join(TEMP_FOLDER, attachment.filename)
+                await attachment.save(temp_image_path)  # Save the image temporarily
 
-                    # Compare the uploaded image
-                    top_matches = compare_image_to_references(temp_image_path, item_names, item_embeddings)
+                # Compare the uploaded image
+                top_matches = compare_image_to_references(temp_image_path, item_names, item_embeddings)
 
-                    # Send results back to Discord
-                    if top_matches:
-                        response = "**Top Matches:**\n"
-                        for item, score in top_matches:
-                            response += f"- {item}: {score:.4f}\n"
-                        await message.channel.send(response)
-                    else:
-                        await message.channel.send("Failed to process the image.")
+                # Send results back to Discord
+                if top_matches:
+                    response = "**Top Matches:**\n"
+                    for item, score in top_matches:
+                        response += f"- {item}: {score:.4f}\n"
+                    await message.channel.send(response)
+                else:
+                    await message.channel.send("Failed to process the image.")
 
-                    os.remove(temp_image_path)  # Clean up temp image
-        else:
-            await message.channel.send("No images found in this message. Please attach an image.")
+                os.remove(temp_image_path)  # Clean up temp image
 
 # Run the bot
 if TOKEN:
