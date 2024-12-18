@@ -63,9 +63,7 @@ def compare_image_to_references(image_path, item_names, item_embeddings):
 # ---- Discord Bot ---- #
 intents = discord.Intents.default()
 intents.messages = True
-intents.message_content = True
-intents.guilds = True
-intents.message_attachments = True
+intents.message_content = True  # Required for reading message content and attachments
 
 client = discord.Client(intents=intents)
 
