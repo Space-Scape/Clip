@@ -1,10 +1,9 @@
+discord.py
 torch
 torchvision
-torchaudio
+pillow
 ftfy
 regex
 tqdm
 opencv-python-headless
-discord.py
 git+https://github.com/openai/CLIP.git
-Pillow
