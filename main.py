@@ -1,11 +1,11 @@
 import discord
 import torch
 import clip
+import cv2
 from PIL import Image
 import os
 import glob
 import numpy as np
-import cv2  # OpenCV for image detection and processing
 
 # ---- Discord Bot Configuration ---- #
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Get token from Railway environment variable
@@ -16,9 +16,10 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
 
 # Folder paths
-REFERENCE_FOLDER = "Images"          # Reference OSRS item images
-TEMP_FOLDER = "temp_images"          # Folder to temporarily save uploaded images
+REFERENCE_FOLDER = "Images"            # Reference OSRS item images
+TEMP_FOLDER = "temp_images"            # Folder to temporarily save uploaded images
 CROPPED_INVENTORY = "cropped_inventory.png"
+REFERENCE_INVENTORY = "reference_inventory.png"  # Path to the reference inventory image
 
 # Ensure temp folder exists
 if not os.path.exists(TEMP_FOLDER):
@@ -43,32 +44,29 @@ def load_reference_images():
     print("Reference images loaded successfully.")
     return item_names, item_embeddings
 
-# ---- Crop Inventory Panel Using OpenCV ---- #
-def crop_inventory_with_opencv(full_image_path, save_path=CROPPED_INVENTORY):
-    """ Dynamically detect and crop the inventory panel using OpenCV. """
-    image = cv2.imread(full_image_path, cv2.IMREAD_COLOR)
+# ---- Crop Inventory Panel Using Template Matching ---- #
+def crop_inventory_panel(full_image_path, template_image_path, save_path=CROPPED_INVENTORY):
+    """ Detect and crop the inventory panel from the full client screenshot using template matching. """
+    full_image = cv2.imread(full_image_path, cv2.IMREAD_COLOR)
+    template = cv2.imread(template_image_path, cv2.IMREAD_COLOR)
 
-    # Convert to grayscale for edge detection
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, threshold1=50, threshold2=150)  # Edge detection
+    # Perform template matching
+    result = cv2.matchTemplate(full_image, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
-    # Find contours and locate the largest rectangle (inventory panel)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    inventory_panel = None
+    # Define confidence threshold
+    confidence_threshold = 0.8  # Adjust if needed
+    if max_val >= confidence_threshold:
+        # Inventory panel found; crop the region
+        top_left_x, top_left_y = max_loc
+        bottom_right_x = top_left_x + template.shape[1]
+        bottom_right_y = top_left_y + template.shape[0]
 
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        if 400 < w < 420 and 550 < h < 570:  # Approximate size of the inventory panel
-            inventory_panel = (x, y, w, h)
-            break
-
-    if inventory_panel:
-        x, y, w, h = inventory_panel
-        cropped = image[y:y+h, x:x+w]
-        cv2.imwrite(save_path, cropped)
+        cropped_inventory = full_image[top_left_y:bottom_right_y, top_left_x:bottom_right_x]
+        cv2.imwrite(save_path, cropped_inventory)  # Save the cropped panel
         return save_path
     else:
-        raise ValueError("Inventory panel not found in the image!")
+        raise ValueError("Error: Inventory panel not found in the image!")
 
 # ---- Check Items Per Slot ---- #
 def check_slots(cropped_image_path, item_names, item_embeddings):
@@ -136,8 +134,8 @@ async def on_message(message):
                 await attachment.save(temp_image_path)  # Save the image temporarily
 
                 try:
-                    # Crop inventory and analyze slots
-                    cropped_inventory_path = crop_inventory_with_opencv(temp_image_path)
+                    # Crop inventory dynamically
+                    cropped_inventory_path = crop_inventory_panel(temp_image_path, REFERENCE_INVENTORY)
                     slot_matches = check_slots(cropped_inventory_path, item_names, item_embeddings)
 
                     # Send cropped inventory for verification
@@ -151,14 +149,14 @@ async def on_message(message):
                         await message.channel.send(response)
                     else:
                         await message.channel.send("No matching items detected in the inventory.")
-
                 except ValueError as e:
-                    await message.channel.send(f"Error: {e}")
-
-                os.remove(temp_image_path)  # Clean up temp image
+                    await message.channel.send(str(e))
+                finally:
+                    os.remove(temp_image_path)  # Clean up temp image
 
 # Run the bot
 if TOKEN:
     client.run(TOKEN)
 else:
     print("Error: DISCORD_BOT_TOKEN not found. Set the environment variable.")
+
