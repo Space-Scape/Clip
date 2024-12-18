@@ -19,7 +19,7 @@ model, preprocess = clip.load("ViT-B/32", device=device)
 REFERENCE_FOLDER = "Images"            # Reference OSRS item images
 TEMP_FOLDER = "temp_images"            # Folder to temporarily save uploaded images
 CROPPED_INVENTORY = "cropped_inventory.png"
-RREFERENCE_INVENTORY = "References/reference_inventory.png"
+REFERENCE_INVENTORY = "References/reference_inventory.png"
 
 # Ensure temp folder exists
 if not os.path.exists(TEMP_FOLDER):
