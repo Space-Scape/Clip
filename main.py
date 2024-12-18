@@ -5,6 +5,7 @@ from PIL import Image
 import os
 import glob
 import numpy as np
+import cv2  # OpenCV for image detection and processing
 
 # ---- Discord Bot Configuration ---- #
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Get token from Railway environment variable
@@ -42,20 +43,32 @@ def load_reference_images():
     print("Reference images loaded successfully.")
     return item_names, item_embeddings
 
-# ---- Crop Inventory Panel ---- #
-def crop_inventory_panel(full_image_path, save_path=CROPPED_INVENTORY):
-    """ Crop the inventory panel from the full client screenshot. """
-    full_image = Image.open(full_image_path)
+# ---- Crop Inventory Panel Using OpenCV ---- #
+def crop_inventory_with_opencv(full_image_path, save_path=CROPPED_INVENTORY):
+    """ Dynamically detect and crop the inventory panel using OpenCV. """
+    image = cv2.imread(full_image_path, cv2.IMREAD_COLOR)
 
-    # Adjusted crop position (72 pixels upward)
-    inventory_width, inventory_height = 414, 559
-    top_left_x, top_left_y = 0, 72
-    bottom_right_x = top_left_x + inventory_width
-    bottom_right_y = top_left_y + inventory_height
+    # Convert to grayscale for edge detection
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, threshold1=50, threshold2=150)  # Edge detection
 
-    cropped_inventory = full_image.crop((top_left_x, top_left_y, bottom_right_x, bottom_right_y))
-    cropped_inventory.save(save_path)
-    return save_path
+    # Find contours and locate the largest rectangle (inventory panel)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    inventory_panel = None
+
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if 400 < w < 420 and 550 < h < 570:  # Approximate size of the inventory panel
+            inventory_panel = (x, y, w, h)
+            break
+
+    if inventory_panel:
+        x, y, w, h = inventory_panel
+        cropped = image[y:y+h, x:x+w]
+        cv2.imwrite(save_path, cropped)
+        return save_path
+    else:
+        raise ValueError("Inventory panel not found in the image!")
 
 # ---- Check Items Per Slot ---- #
 def check_slots(cropped_image_path, item_names, item_embeddings):
@@ -122,21 +135,25 @@ async def on_message(message):
                 temp_image_path = os.path.join(TEMP_FOLDER, attachment.filename)
                 await attachment.save(temp_image_path)  # Save the image temporarily
 
-                # Crop inventory and analyze slots
-                cropped_inventory_path = crop_inventory_panel(temp_image_path)
-                slot_matches = check_slots(cropped_inventory_path, item_names, item_embeddings)
+                try:
+                    # Crop inventory and analyze slots
+                    cropped_inventory_path = crop_inventory_with_opencv(temp_image_path)
+                    slot_matches = check_slots(cropped_inventory_path, item_names, item_embeddings)
 
-                # Send cropped inventory for verification
-                await message.channel.send(file=discord.File(cropped_inventory_path))
+                    # Send cropped inventory for verification
+                    await message.channel.send(file=discord.File(cropped_inventory_path))
 
-                # Build response for detected items
-                if slot_matches:
-                    response = "**Detected Items in Inventory:**\n"
-                    for row, col, item, score in slot_matches:
-                        response += f"Slot ({row}, {col}): {item} ({score:.2f})\n"
-                    await message.channel.send(response)
-                else:
-                    await message.channel.send("No matching items detected in the inventory.")
+                    # Build response for detected items
+                    if slot_matches:
+                        response = "**Detected Items in Inventory:**\n"
+                        for row, col, item, score in slot_matches:
+                            response += f"Slot ({row}, {col}): {item} ({score:.2f})\n"
+                        await message.channel.send(response)
+                    else:
+                        await message.channel.send("No matching items detected in the inventory.")
+
+                except ValueError as e:
+                    await message.channel.send(f"Error: {e}")
 
                 os.remove(temp_image_path)  # Clean up temp image
 
