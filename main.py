@@ -35,6 +35,11 @@ def load_reference_images(image_folder):
 
 # Function to compare inventory image to reference images
 def compare_inventory_to_references(inventory_image_path, item_names, item_embeddings):
+    print(f"Looking for file: {inventory_image_path}")  # Debug print to confirm path
+    if not os.path.exists(inventory_image_path):
+        print(f"Error: File not found at {inventory_image_path}")
+        return
+
     print("Processing inventory image...")
     try:
         inventory_image = Image.open(inventory_image_path).resize((224, 224)).convert("RGB")
@@ -58,10 +63,11 @@ def compare_inventory_to_references(inventory_image_path, item_names, item_embed
 if __name__ == "__main__":
     # Define paths
     images_folder = "Images"
-    inventory_image_path = "Test_Inventory/inventory.png"
+    inventory_image_path = "Test_Inventory/inventory_screenshot.png"  # Updated path
 
     # Load reference item images
     item_names, item_embeddings = load_reference_images(images_folder)
 
     # Compare inventory image to reference items
     compare_inventory_to_references(inventory_image_path, item_names, item_embeddings)
+
