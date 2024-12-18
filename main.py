@@ -1,4 +1,4 @@
-iimport discord
+import discord
 import torch
 import clip
 from PIL import Image
