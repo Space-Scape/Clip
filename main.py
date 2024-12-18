@@ -7,86 +7,101 @@ import glob
 import numpy as np
 
 # ---- Discord Bot Configuration ---- #
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-CHANNEL_ID = 1273094409432469605
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Get token from Railway environment variable
+CHANNEL_ID = 1273094409432469605        # Replace with your target channel ID
 
 # ---- CLIP Model Setup ---- #
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
 
-# Paths
-REFERENCE_FOLDER = "Images"
-TEMP_FOLDER = "temp_images"
+# Folder paths
+REFERENCE_FOLDER = "Images"          # Reference OSRS item images
+TEMP_FOLDER = "temp_images"          # Folder to temporarily save uploaded images
+CROPPED_INVENTORY = "cropped_inventory.png"
+
+# Ensure temp folder exists
 if not os.path.exists(TEMP_FOLDER):
     os.makedirs(TEMP_FOLDER)
 
-# Inventory grid settings
-SLOT_WIDTH, SLOT_HEIGHT = 73, 65  # Size of each grid square
-GRID_ROWS, GRID_COLS = 7, 4       # Grid dimensions
-
-# ---- Load Reference Images ---- #
+# ---- Load Reference Item Images ---- #
 def load_reference_images():
     image_paths = glob.glob(os.path.join(REFERENCE_FOLDER, "*.png"))
     item_names = [os.path.basename(path).replace(".png", "").replace("_", " ") for path in image_paths]
     item_embeddings = []
 
+    print("Loading reference images...")
     for path in image_paths:
-        image = Image.open(path).convert("RGB")
-        processed_image = preprocess(image).unsqueeze(0).to(device)
-        with torch.no_grad():
-            embedding = model.encode_image(processed_image)
-        item_embeddings.append(embedding)
+        try:
+            image = Image.open(path).convert("RGB")
+            processed_image = preprocess(image).unsqueeze(0).to(device)
+            with torch.no_grad():
+                embedding = model.encode_image(processed_image)
+            item_embeddings.append(embedding)
+        except Exception as e:
+            print(f"Error loading {path}: {e}")
+    print("Reference images loaded successfully.")
     return item_names, item_embeddings
 
-item_names, item_embeddings = load_reference_images()
-
 # ---- Crop Inventory Panel ---- #
-def crop_inventory_panel(full_image):
-    """
-    Automatically detects and crops the inventory panel based on its known size and location.
-    """
-    width, height = full_image.size
-    inventory_x = width - 414
-    inventory_y = height - 559
-    cropped_inventory = full_image.crop((inventory_x, inventory_y, width, height))
-    return cropped_inventory
+def crop_inventory_panel(full_image_path, save_path=CROPPED_INVENTORY):
+    """ Crop the inventory panel from the full client screenshot. """
+    full_image = Image.open(full_image_path)
 
-# ---- Check Items in Each Slot ---- #
-def check_inventory_slots(inventory_image):
-    """
-    Splits the inventory into grid slots, checks each slot for matching items.
-    """
-    matches = []
-    for row in range(GRID_ROWS):
-        for col in range(GRID_COLS):
-            # Crop individual slot
-            x1 = col * SLOT_WIDTH
-            y1 = row * SLOT_HEIGHT
-            x2 = x1 + SLOT_WIDTH
-            y2 = y1 + SLOT_HEIGHT
-            slot_image = inventory_image.crop((x1, y1, x2, y2))
+    # Adjusted crop position (72 pixels upward)
+    inventory_width, inventory_height = 414, 559
+    top_left_x, top_left_y = 0, 72
+    bottom_right_x = top_left_x + inventory_width
+    bottom_right_y = top_left_y + inventory_height
 
-            # Compare to reference images
-            processed_slot = preprocess(slot_image).unsqueeze(0).to(device)
+    cropped_inventory = full_image.crop((top_left_x, top_left_y, bottom_right_x, bottom_right_y))
+    cropped_inventory.save(save_path)
+    return save_path
+
+# ---- Check Items Per Slot ---- #
+def check_slots(cropped_image_path, item_names, item_embeddings):
+    cropped_image = Image.open(cropped_image_path).convert("RGB")
+
+    slot_width, slot_height = 73, 65
+    slots = []
+
+    # Iterate over the 7x4 grid
+    for row in range(7):
+        for col in range(4):
+            left = col * slot_width
+            upper = row * slot_height
+            right = left + slot_width
+            lower = upper + slot_height
+
+            slot_image = cropped_image.crop((left, upper, right, lower))
+            slot_image = slot_image.resize((224, 224))  # Resize for CLIP model
+            processed_image = preprocess(slot_image).unsqueeze(0).to(device)
+
             with torch.no_grad():
-                slot_embedding = model.encode_image(processed_slot)
-            similarities = [
-                (item_names[idx], torch.cosine_similarity(slot_embedding, ref_embed).item())
-                for idx, ref_embed in enumerate(item_embeddings)
-            ]
+                slot_embedding = model.encode_image(processed_image)
 
-            # Get the best match
-            best_match = max(similarities, key=lambda x: x[1])
-            if best_match[1] > 0.8:  # Threshold for confidence
-                matches.append((row, col, best_match[0], best_match[1]))
-    return matches
+            # Compare slot with reference images
+            similarities = []
+            for idx, ref_embedding in enumerate(item_embeddings):
+                similarity = torch.cosine_similarity(slot_embedding, ref_embedding).item()
+                similarities.append((item_names[idx], similarity))
+
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            top_match = similarities[0]
+
+            if top_match[1] > 0.9:  # Threshold for confidence
+                slots.append((row + 1, col + 1, top_match[0], top_match[1]))
+
+    return slots
 
 # ---- Discord Bot ---- #
 intents = discord.Intents.default()
 intents.messages = True
-intents.message_content = True
+intents.message_content = True  # Required for reading message content and attachments
 
 client = discord.Client(intents=intents)
+
+# Preload the reference images
+item_names, item_embeddings = load_reference_images()
 
 @client.event
 async def on_ready():
@@ -94,41 +109,39 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
+    # Ignore messages outside the target channel or from bots
     if message.channel.id != CHANNEL_ID or message.author.bot:
         return
 
+    # Automatically process any image attachments
     if message.attachments:
         await message.channel.send("Processing image... Please wait.")
 
         for attachment in message.attachments:
             if attachment.filename.endswith((".png", ".jpg", ".jpeg")):
                 temp_image_path = os.path.join(TEMP_FOLDER, attachment.filename)
-                await attachment.save(temp_image_path)
+                await attachment.save(temp_image_path)  # Save the image temporarily
 
-                # Crop inventory panel
-                full_image = Image.open(temp_image_path).convert("RGB")
-                cropped_inventory = crop_inventory_panel(full_image)
-                cropped_inventory_path = os.path.join(TEMP_FOLDER, "cropped_inventory.png")
-                cropped_inventory.save(cropped_inventory_path)
+                # Crop inventory and analyze slots
+                cropped_inventory_path = crop_inventory_panel(temp_image_path)
+                slot_matches = check_slots(cropped_inventory_path, item_names, item_embeddings)
 
-                # Check each slot
-                matches = check_inventory_slots(cropped_inventory)
+                # Send cropped inventory for verification
+                await message.channel.send(file=discord.File(cropped_inventory_path))
 
-                # Prepare and send results
-                if matches:
-                    response = "**Inventory Matches:**\n"
-                    for row, col, item, score in matches:
-                        response += f"Slot ({row+1}, {col+1}): {item} ({score:.4f})\n"
-                    await message.channel.send(file=discord.File(cropped_inventory_path))
+                # Build response for detected items
+                if slot_matches:
+                    response = "**Detected Items in Inventory:**\n"
+                    for row, col, item, score in slot_matches:
+                        response += f"Slot ({row}, {col}): {item} ({score:.2f})\n"
                     await message.channel.send(response)
                 else:
-                    await message.channel.send("No matching items found.")
+                    await message.channel.send("No matching items detected in the inventory.")
 
-                os.remove(temp_image_path)
-                os.remove(cropped_inventory_path)
+                os.remove(temp_image_path)  # Clean up temp image
 
 # Run the bot
 if TOKEN:
     client.run(TOKEN)
 else:
-    print("Error: DISCORD_BOT_TOKEN not found.")
+    print("Error: DISCORD_BOT_TOKEN not found. Set the environment variable.")
