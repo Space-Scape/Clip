@@ -1,64 +1,63 @@
 import torch
 import clip
 from PIL import Image
-import glob 
-import numpy as np 
+import glob
+import os
+import numpy as np
 
-
-
+# Device setup
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model, preprocess = clip.load("ViT-B/32", device=device)
 
-# print(clip.available_models())
-
 # Function for embedding images
-def Images(image):
+def get_image_embedding(image):
     processed_image = preprocess(image).unsqueeze(0).to(device)
     with torch.no_grad():
-        image_embeddings = model.encode_image( processed_image)
-    return image_embeddings
-
+        image_embedding = model.encode_image(processed_image)
+    return image_embedding
 
 # Function for embedding text
-def Text(text: str):
+def get_text_embedding(text: str):
     text_tokens = clip.tokenize(text).to(device)
     with torch.no_grad():
         text_embedding = model.encode_text(text_tokens)
     return text_embedding
 
-
 # Function for comparing image and text similarity
-def Compare(image, text: str):
-    print(text)
+def compare(image, text: list):
     image = preprocess(image).unsqueeze(0).to(device)
-    text = clip.tokenize(text).to(device)
-    
+    text_tokens = clip.tokenize(text).to(device)
     with torch.no_grad():
-        logits_per_image, logits_per_text = model(image, text)
+        logits_per_image, logits_per_text = model(image, text_tokens)
         probs = logits_per_image.softmax(dim=-1).cpu().numpy()
-        return np.ravel(probs)
+    return np.ravel(probs)
 
-# Testing with single image
-# image = Image.open('guy.jpg')
-# image = image.resize((224, 224))
-# result = Images(image=image)
-# print(result)    
+# Load all item images from the Images folder
+image_paths = glob.glob('Images/*.png')  # Adjust path if necessary
+item_names = [os.path.basename(path).replace(".png", "").replace("_", " ") for path in image_paths]
 
-# Testing the text embedding
-# text_result = Text(text='coding is fun')
-# print(text_result)
-   
+# Preload all reference images into embeddings
+item_embeddings = []
+for path in image_paths:
+    image = Image.open(path)
+    embedding = get_image_embedding(image)
+    item_embeddings.append(embedding)
 
-# test with multiple images from a folder
-image_path = glob.glob('images/*.jpg')
-for images in image_path:
-    all_images = Image.open(images)
-    all_images = all_images.resize((224,222))
-    result = Images(image=all_images)
-    print(result)
+# Compare an inventory screenshot to the item list
+inventory_image_path = 'inventory_screenshot.png'  # Replace with your inventory screenshot
+inventory_image = Image.open(inventory_image_path).resize((224, 224))  # Adjust resizing as needed
 
+# Calculate similarity with all items
+inventory_embedding = get_image_embedding(inventory_image)
+similarities = []
 
+for idx, item_embedding in enumerate(item_embeddings):
+    similarity = torch.cosine_similarity(inventory_embedding, item_embedding).item()
+    similarities.append((item_names[idx], similarity))
 
-# similarity_result = Compare(image=image,text=['a dog','a person','a man','a cat'])
-# print(similarity_result)
+# Sort and display the most similar item
+similarities.sort(key=lambda x: x[1], reverse=True)
+print("Top Matches:")
+for item, score in similarities[:5]:  # Top 5 matches
+    print(f"{item}: {score:.4f}")
 
