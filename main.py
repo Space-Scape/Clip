@@ -6,6 +6,8 @@ import os
 import glob
 import numpy as np
 from PIL import Image
+import easyocr
+import re
 
 # ---- Discord Bot Configuration ---- #
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Get token from Railway environment variable
@@ -117,6 +119,22 @@ def check_slots(cropped_image_path, item_names, item_embeddings, empty_embedding
 
     return detected_items
 
+# ---- Extract Text After Colons and Before Parentheses ---- #
+def extract_text_from_chatbox(image_path):
+    try:
+        reader = easyocr.Reader(['en'], gpu=False)
+        results = reader.readtext(image_path)
+
+        extracted_text = set()  # Use a set to ensure unique matches
+        for _, text, _ in results:
+            matches = re.findall(r':\s*([^:()\n]+)\s*\(', text)
+            extracted_text.update(matches)
+
+        return list(extracted_text)
+    except Exception as e:
+        print(f"Error during chatbox text extraction: {e}")
+        return []
+
 # ---- Discord Bot ---- #
 intents = discord.Intents.default()
 intents.messages = True
@@ -152,9 +170,6 @@ async def on_message(message):
                     # Analyze slots
                     slot_matches = check_slots(cropped_inventory_path, item_names, item_embeddings, empty_embedding_index)
 
-                    # Send cropped inventory for verification
-                    await message.channel.send(file=discord.File(cropped_inventory_path))
-
                     # Build and send detected items response
                     if slot_matches:
                         response = "**Detected Items in Inventory:**\n"
@@ -163,6 +178,14 @@ async def on_message(message):
                         await message.channel.send(response)
                     else:
                         await message.channel.send("No matching items detected in the inventory.")
+
+                    # Extract text from chatbox
+                    extracted_text = extract_text_from_chatbox(temp_image_path)
+                    if extracted_text:
+                        response = "**Extracted Text from Chatbox:**\n" + "\n".join(extracted_text)
+                        await message.channel.send(response)
+                    else:
+                        await message.channel.send("No matching text found in chatbox.")
 
                 except Exception as e:
                     await message.channel.send(f"Error: {e}")
